@@ -484,9 +484,10 @@ class LLaDAEvalHarness(LM):
                 "result": out,
             })
 
-            self.accelerator.wait_for_everyone()
+            if self.accelerator is not None:
+                self.accelerator.wait_for_everyone()
 
-        with open(self.generated_samples_path, "w") as f:
+        with open(self.generated_samples_path + str(self._rank) + ".json", "w") as f:
             json.dump(out_for_json, f, indent=2)
 
         return out
