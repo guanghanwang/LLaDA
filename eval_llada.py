@@ -116,6 +116,8 @@ class LLaDAEvalHarness(LM):
         self.gen_length = gen_length
         self.block_length = block_length
         self.remasking = remasking    
+        print(self.generated_samples_path)
+
     @property
     def rank(self):
         return self._rank
