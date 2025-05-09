@@ -46,27 +46,32 @@ export HF_DATASETS_TRUST_REMOTE_CODE=true
 # cp ~/LLaDA/*.json ~/LLaDA/outputs/mbpp/llada_conf_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1/
 # rm ~/LLaDA/*.json
 
-# # GSM8K LLaDA_conf
-# accelerate launch eval_llada.py --tasks gsm8k --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/gsm8k/llada_conf/genlen-512_T-512_blocksize-32" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,block_size=32,sampler='llada_conf'
-# cp ~/LLaDA/*.json ~/LLaDA/outputs/gsm8k/llada_conf/genlen-512_T-512_blocksize-32/
+# # GSM8K LLaDA_conf_remdm_loop_remdmnumber-1
+# accelerate launch eval_llada.py --tasks gsm8k --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/gsm8k/llada_conf_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,remdm_number=1,block_size=32,sampler='llada_conf_remdm_loop'
+# cp ~/LLaDA/*.json ~/LLaDA/outputs/gsm8k/llada_conf_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1/
 # rm ~/LLaDA/*.json
 
-# GSM8K LLaDA_conf_remdm_loop_remdmnumber-1
-accelerate launch eval_llada.py --tasks gsm8k --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/gsm8k/llada_conf_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,remdm_number=1,block_size=32,sampler='llada_conf_remdm_loop'
-cp ~/LLaDA/*.json ~/LLaDA/outputs/gsm8k/llada_conf_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1/
+# HumanEval LLaDA_conf_remdm
+accelerate launch eval_llada.py --tasks humaneval --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/humaneval/llada_conf_remdm/genlen-512_T-512_blocksize-32" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,block_size=32,sampler='llada_conf_remdm'
+cp ~/LLaDA/*.json ~/LLaDA/outputs/humaneval/llada_conf_remdm/genlen-512_T-512_blocksize-32/
 rm ~/LLaDA/*.json
 
-# # HumanEval LLaDA_conf_remdm
-# accelerate launch eval_llada.py --tasks humaneval --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/humaneval/llada_conf_remdm/genlen-512_T-512_blocksize-32" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,block_size=32,sampler='llada_conf_remdm'
-# cp ~/LLaDA/*.json ~/LLaDA/outputs/humaneval/llada_conf_remdm/genlen-512_T-512_blocksize-32/
-# rm ~/LLaDA/*.json
+# HumanEval LLaDA_random_remdm_loop_remdmnumber-2
+accelerate launch eval_llada.py --tasks humaneval --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/humaneval/llada_random_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-2" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,block_size=32,remdm_number=2,sampler='llada_random_remdm_loop'
+cp ~/LLaDA/*.json ~/LLaDA/outputs/humaneval/llada_random_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-2/
+rm ~/LLaDA/*.json
 
-# # HumanEval LLaDA_conf_remdm_loop_remdmnumber-1
-# accelerate launch eval_llada.py --tasks humaneval --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/humaneval/llada_conf_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,block_size=32,remdm_number=1,sampler='llada_conf_remdm_loop'
-# cp ~/LLaDA/*.json ~/LLaDA/outputs/humaneval/llada_conf_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1/
-# rm ~/LLaDA/*.json
+# HumanEval LLaDA_conf_remdm_loop_remdmnumber-1
+accelerate launch eval_llada.py --tasks humaneval --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/humaneval/llada_conf_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,block_size=32,remdm_number=1,sampler='llada_conf_remdm_loop'
+cp ~/LLaDA/*.json ~/LLaDA/outputs/humaneval/llada_conf_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1/
+rm ~/LLaDA/*.json
 
-# # HumanEval LLaDA_random_remdm_loop_remdmnumber-2
-# accelerate launch eval_llada.py --tasks humaneval --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/humaneval/llada_random_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-2" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,block_size=32,remdm_number=2,sampler='llada_random_remdm_loop'
-# cp ~/LLaDA/*.json ~/LLaDA/outputs/humaneval/llada_random_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-2/
-# rm ~/LLaDA/*.json
+# HumanEval LLaDA_random_remdm_loop_remdmnumber-1
+accelerate launch eval_llada.py --tasks humaneval --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/humaneval/llada_random_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,block_size=32,remdm_number=1,sampler='llada_random_remdm_loop'
+cp ~/LLaDA/*.json ~/LLaDA/outputs/humaneval/llada_random_remdm_loop/genlen-512_T-512_blocksize-32_remdmnumber-1/
+rm ~/LLaDA/*.json
+
+# GSM8K LLaDA_conf
+accelerate launch eval_llada.py --tasks gsm8k --model llada_dist --confirm_run_unsafe_code --output_path "./outputs/gsm8k/llada_conf/genlen-512_T-512_blocksize-32" --model_args model_path='GSAI-ML/LLaDA-8B-Instruct',mask_length=512,sampling_steps=512,block_size=32,sampler='llada_conf'
+cp ~/LLaDA/*.json ~/LLaDA/outputs/gsm8k/llada_conf/genlen-512_T-512_blocksize-32/
+rm ~/LLaDA/*.json
