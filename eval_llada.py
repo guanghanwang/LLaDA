@@ -18,6 +18,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModel
 from generate import generate
 import json
+import os
 
 
 def set_seed(seed):
@@ -48,9 +49,9 @@ class LLaDAEvalHarness(LM):
         mc_num=128,
         is_check_greedy=True,
         cfg=0.,
-        steps=1024,
-        gen_length=1024,
-        block_length=1024,
+        sampling_steps=512,
+        mask_length=512,
+        block_size=32,
         remasking='low_confidence',
         device="cuda",
         sampler='',
@@ -112,9 +113,9 @@ class LLaDAEvalHarness(LM):
         self.remdm_number = remdm_number
 
         self.cfg = cfg
-        self.steps = steps
-        self.gen_length = gen_length
-        self.block_length = block_length
+        self.sampling_steps = sampling_steps
+        self.mask_length = mask_length
+        self.block_size = block_size
         self.remasking = remasking    
         print(self.generated_samples_path)
 
@@ -258,189 +259,200 @@ class LLaDAEvalHarness(LM):
 
     def loglikelihood_rolling(self, requests):
         raise NotImplementedError
-
-    def llada_random_sample(self, prompt):
-        xt = torch.full((1, prompt.shape[1] + self.gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
-        xt[:, :prompt.shape[1]] = prompt.clone()
-
-        for _ in range(self.steps):
-            mask_index = (xt == self.mask_id)
-            logits = self.model(xt).logits
-            p = F.softmax(logits.to(torch.float64), dim=-1)
-            x0 = _sample_categorical(p)
-            x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
-
-            x0 = torch.where(mask_index, x0, xt)
-            confidence = torch.where(mask_index, x0_p, -np.inf)
-
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            for j in range(confidence.shape[0]):
-                _, select_index = torch.topk(confidence[j], k=int(self.gen_length / self.steps))
-                transfer_index[j, select_index] = True
-            xt[transfer_index] = x0[transfer_index]
     
-        return xt
-    
+    @torch.no_grad()
     def llada_conf_sample(self, prompt):
-        xt = torch.full((1, prompt.shape[1] + self.gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
+        xt = torch.full((1, prompt.shape[1] + self.mask_length), self.mask_id, dtype=torch.long).to(self.model.device)
         xt[:, :prompt.shape[1]] = prompt.clone()
+        
+        prompt_index = (xt != self.mask_id)
+        prompt_len = prompt_index.sum(1).item()
 
-        for _ in range(self.steps):
-            mask_index = (xt == self.mask_id)
-            logits = self.model(xt).logits
-            p = F.softmax(logits.to(torch.float64), dim=-1)
-            x0 = _sample_categorical(p)
-            x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+        assert self.mask_length % self.block_size == 0
+        num_blocks = self.mask_length // self.block_size
 
-            x0 = torch.where(mask_index, x0, xt)
-            confidence = torch.where(mask_index, x0_p, -np.inf)
+        assert self.sampling_steps % num_blocks == 0
+        steps = self.sampling_steps // num_blocks
 
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            for j in range(confidence.shape[0]):
-                _, select_index = torch.topk(confidence[j], k=int(self.gen_length / self.steps))
-                transfer_index[j, select_index] = True
-            xt[transfer_index] = x0[transfer_index]
-    
+        assert self.mask_length % self.sampling_steps == 0
+
+        for num_block in range(num_blocks):
+            for i in range(steps):
+                mask_index = (xt == self.mask_id)
+                logits = self.model(xt).logits
+                p = F.softmax(logits.to(torch.float64), dim=-1)
+                x0 = _sample_categorical(p)
+                x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+
+                x0_p[:, prompt_len + (num_block + 1) * self.block_size:] = -np.inf
+                x0 = torch.where(mask_index, x0, xt)
+                confidence = torch.where(mask_index, x0_p, -np.inf)
+
+                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                for j in range(confidence.shape[0]):
+                    _, select_index = torch.topk(confidence[j], k=int(self.mask_length / self.sampling_steps))
+                    transfer_index[j, select_index] = True
+                xt[transfer_index] = x0[transfer_index]
+            if torch.sum(xt == self.tokenizer.eos_token_id) > 0:
+                return xt
+
         return xt
-    
-    def llada_randomremdm_sample(self, prompt):
-        xt = torch.full((1, prompt.shape[1] + self.gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
-        xt[:, :prompt.shape[1]] = prompt.clone()
 
-        for i in range(self.steps - 1):
-            mask_index = (xt == self.mask_id)
-            if i > 0:
-                remask_index = torch.zeros_like(xt, dtype=torch.bool, device=xt.device)
-                mask_conf = torch.rand((xt.shape[0], xt.shape[1]), device=x0.device)
-                mask_conf[:, :prompt.shape[1]] = -np.inf
-                mask_conf = torch.where(mask_index, -np.inf, mask_conf)
-                _, mask_indices = torch.topk(mask_conf, k=1, dim=1)
-                remask_index[0, mask_indices] = True
-                xt[remask_index] = self.mask_id
-            
-            logits = self.model(xt).logits
-            p = F.softmax(logits.to(torch.float64), dim=-1)
-            x0 = _sample_categorical(p)
-            x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
-
-            x0 = torch.where(mask_index, x0, xt)
-            confidence = torch.where(mask_index, x0_p, -np.inf)
-
-            transfer_length = int(self.gen_length / self.steps) + 1
-
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            for j in range(confidence.shape[0]):
-                _, select_index = torch.topk(confidence[j], k=transfer_length)
-                transfer_index[j, select_index] = True
-            xt[transfer_index] = x0[transfer_index]
-    
-        return xt
-    
+    @torch.no_grad()
     def llada_confremdm_sample(self, prompt):
-        xt = torch.full((1, prompt.shape[1] + self.gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
+        xt = torch.full((1, prompt.shape[1] + self.mask_length), self.mask_id, dtype=torch.long).to(self.model.device)
         xt[:, :prompt.shape[1]] = prompt.clone()
 
-        conf_cache = torch.ones_like(xt, dtype=torch.float64) * np.inf
-        for i in range(self.steps - 1):
-            mask_index = (xt == self.mask_id)
-            if i > 0:
-                remask_index = torch.zeros_like(xt, dtype=torch.bool, device=xt.device)
-                _, mask_indices = torch.topk(conf_cache, k=1, largest=False, dim=1)
-                remask_index[0, mask_indices] = True
-                conf_cache[remask_index] = np.inf
-                xt[remask_index] = self.mask_id
-            
-            logits = self.model(xt).logits
-            p = F.softmax(logits.to(torch.float64), dim=-1)
-            x0 = _sample_categorical(p)
-            x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+        prompt_index = (xt != self.mask_id)
+        prompt_len = prompt_index.sum(1).item()
 
-            x0 = torch.where(mask_index, x0, xt)
-            confidence = torch.where(mask_index, x0_p, -np.inf)
+        assert self.mask_length % self.block_size == 0
+        num_blocks = self.mask_length // self.block_size
 
-            transfer_length = int(self.gen_length / self.steps) + 1
+        assert self.sampling_steps % num_blocks == 0
+        steps = self.sampling_steps // num_blocks
 
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            for j in range(confidence.shape[0]):
-                _, select_index = torch.topk(confidence[j], k=transfer_length)
-                transfer_index[j, select_index] = True
-            xt[transfer_index] = x0[transfer_index]
-            conf_cache[transfer_index] = confidence[transfer_index]
-    
+        assert self.mask_length % self.sampling_steps == 0
+
+        for num_block in range(num_blocks):
+            conf_cache = torch.ones_like(xt, dtype=torch.float64) * np.inf
+            for i in range(steps - 1):
+                mask_index = (xt == self.mask_id)
+                if i > 0:
+                    remask_index = torch.zeros_like(xt, dtype=torch.bool, device=xt.device)
+                    _, mask_indices = torch.topk(conf_cache, k=1, largest=False, dim=1)
+                    remask_index[0, mask_indices] = True
+                    conf_cache[remask_index] = np.inf
+                    xt[remask_index] = self.mask_id
+                
+                logits = self.model(xt).logits
+                p = F.softmax(logits.to(torch.float64), dim=-1)
+                x0 = _sample_categorical(p)
+                x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+
+                x0_p[:, prompt_len + (num_block + 1) * self.block_size:] = -np.inf
+                x0 = torch.where(mask_index, x0, xt)
+                confidence = torch.where(mask_index, x0_p, -np.inf)
+
+                transfer_length = int(self.mask_length / self.sampling_steps) + 1
+
+                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                for j in range(confidence.shape[0]):
+                    _, select_index = torch.topk(confidence[j], k=transfer_length)
+                    transfer_index[j, select_index] = True
+                xt[transfer_index] = x0[transfer_index]
+                conf_cache[transfer_index] = confidence[transfer_index]
+            if torch.sum(xt == self.tokenizer.eos_token_id) > 0:
+                return xt
+
         return xt
-    
+
+    @torch.no_grad()
     def llada_randomremdmloop_sample(self, prompt):
-        xt = torch.full((1, prompt.shape[1] + self.gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
+        xt = torch.full((1, prompt.shape[1] + self.mask_length), self.mask_id, dtype=torch.long).to(self.model.device)
         xt[:, :prompt.shape[1]] = prompt.clone()
 
-        remask_thres = int(self.gen_length / 8 * 7)
-        for i in range(2 * self.steps):
-            mask_index = (xt == self.mask_id)
-            if i >= remask_thres or i < remask_thres + self.steps:
-                remask_index = torch.zeros_like(xt, dtype=torch.bool, device=xt.device)
-                mask_conf = torch.rand((xt.shape[0], xt.shape[1]), device=x0.device)
-                mask_conf[:, :prompt.shape[1]] = -np.inf
-                mask_conf = torch.where(mask_index, -np.inf, mask_conf)
-                _, mask_indices = torch.topk(mask_conf, k=self.remdm_number, dim=1)
-                remask_index[0, mask_indices] = True
-                xt[remask_index] = self.mask_id
-            logits = self.model(xt).logits
-            p = F.softmax(logits.to(torch.float64), dim=-1)
-            x0 = _sample_categorical(p)
-            x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+        prompt_index = (xt != self.mask_id)
+        prompt_len = prompt_index.sum(1).item()
 
-            x0 = torch.where(mask_index, x0, xt)
-            confidence = torch.where(mask_index, x0_p, -np.inf)
+        assert self.mask_length % self.block_size == 0
+        num_blocks = self.mask_length // self.block_size
 
-            if i >= remask_thres or i < remask_thres + self.steps:
-                transfer_length = self.remdm_number
-            else:
-                transfer_length = int(self.gen_length / self.steps)
+        assert self.sampling_steps % num_blocks == 0
+        steps = self.sampling_steps // num_blocks
 
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            for j in range(confidence.shape[0]):
-                _, select_index = torch.topk(confidence[j], k=transfer_length)
-                transfer_index[j, select_index] = True
-            xt[transfer_index] = x0[transfer_index]
-    
+        assert self.mask_length % self.sampling_steps == 0
+
+        for num_block in range(num_blocks):
+            remask_thres = int(self.block_size / 8 * 7)
+            for i in range(2 * steps):
+                mask_index = (xt == self.mask_id)
+                if i >= remask_thres and i < remask_thres + steps:
+                    remask_index = torch.zeros_like(xt, dtype=torch.bool, device=xt.device)
+                    mask_conf = torch.rand((xt.shape[0], xt.shape[1]), device=x0.device)
+                    mask_conf[:, :prompt.shape[1]] = -np.inf
+                    mask_conf[:, prompt_len + (num_block + 1) * self.block_size:] = -np.inf
+                    mask_conf = torch.where(mask_index, -np.inf, mask_conf)
+                    _, mask_indices = torch.topk(mask_conf, k=self.remdm_number, dim=1)
+                    remask_index[0, mask_indices] = True
+                    xt[remask_index] = self.mask_id
+                logits = self.model(xt).logits
+                p = F.softmax(logits.to(torch.float64), dim=-1)
+                x0 = _sample_categorical(p)
+                x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+
+                x0_p[:, prompt_len + (num_block + 1) * self.block_size:] = -np.inf
+                x0 = torch.where(mask_index, x0, xt)
+                confidence = torch.where(mask_index, x0_p, -np.inf)
+
+                if i >= remask_thres and i < remask_thres + steps:
+                    transfer_length = self.remdm_number
+                else:
+                    transfer_length = int(self.mask_length / self.sampling_steps)
+
+                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                for j in range(confidence.shape[0]):
+                    _, select_index = torch.topk(confidence[j], k=transfer_length)
+                    transfer_index[j, select_index] = True
+                xt[transfer_index] = x0[transfer_index]
+            if torch.sum(xt == self.tokenizer.eos_token_id) > 0:
+                return xt
+
         return xt
 
+    @torch.no_grad()
     def llada_confremdmloop_sample(self, prompt):
-        xt = torch.full((1, prompt.shape[1] + self.gen_length), self.mask_id, dtype=torch.long).to(self.model.device)
+        xt = torch.full((1, prompt.shape[1] + self.mask_length), self.mask_id, dtype=torch.long).to(self.model.device)
         xt[:, :prompt.shape[1]] = prompt.clone()
 
-        remask_thres = int(self.gen_length / 8 * 7)
-        conf_cache = torch.ones_like(xt, dtype=torch.float64) * np.inf
-        for i in range(2 * self.steps):
-            if i >= remask_thres or i < remask_thres + self.steps:
-                remask_index = torch.zeros_like(xt, dtype=torch.bool, device=xt.device)
-                _, mask_indices = torch.topk(conf_cache, k=self.remdm_number, largest=False, dim=1)
-                remask_index[0, mask_indices] = True
-                conf_cache[remask_index] = np.inf
-                xt[remask_index] = self.mask_id
-            mask_index = (xt == self.mask_id)
-            logits = self.model(xt).logits
-            p = F.softmax(logits.to(torch.float64), dim=-1)
-            x0 = _sample_categorical(p)
-            x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+        prompt_index = (xt != self.mask_id)
+        prompt_len = prompt_index.sum(1).item()
 
-            x0 = torch.where(mask_index, x0, xt)
-            confidence = torch.where(mask_index, x0_p, -np.inf)
+        assert self.mask_length % self.block_size == 0
+        num_blocks = self.mask_length // self.block_size
 
-            if i >= remask_thres or i < remask_thres + self.steps:
-                transfer_length = self.remdm_number
-            else:
-                transfer_length = int(self.gen_length / self.steps)
+        assert self.sampling_steps % num_blocks == 0
+        steps = self.sampling_steps // num_blocks
 
-            transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
-            for j in range(confidence.shape[0]):
-                _, select_index = torch.topk(confidence[j], k=transfer_length)
-                transfer_index[j, select_index] = True
-            xt[transfer_index] = x0[transfer_index]
-            conf_cache[transfer_index] = confidence[transfer_index]
-    
+        assert self.mask_length % self.sampling_steps == 0
+
+        for num_block in range(num_blocks):
+            conf_cache = torch.ones_like(xt, dtype=torch.float64) * np.inf
+            remask_thres = int(self.block_size / 8 * 7)
+            for i in range(2 * steps):
+                if i >= remask_thres and i < remask_thres + steps:
+                    remask_index = torch.zeros_like(xt, dtype=torch.bool, device=xt.device)
+                    _, mask_indices = torch.topk(conf_cache, k=self.remdm_number, largest=False, dim=1)
+                    remask_index[0, mask_indices] = True
+                    conf_cache[remask_index] = np.inf
+                    xt[remask_index] = self.mask_id
+                mask_index = (xt == self.mask_id)
+                logits = self.model(xt).logits
+                p = F.softmax(logits.to(torch.float64), dim=-1)
+                x0 = _sample_categorical(p)
+                x0_p = torch.squeeze(torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+
+                x0_p[:, prompt_len + (num_block + 1) * self.block_size:] = -np.inf
+                x0 = torch.where(mask_index, x0, xt)
+                confidence = torch.where(mask_index, x0_p, -np.inf)
+
+                if i >= remask_thres and i < remask_thres + steps:
+                    transfer_length = self.remdm_number
+                else:
+                    transfer_length = int(self.mask_length / self.sampling_steps)
+
+                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                for j in range(confidence.shape[0]):
+                    _, select_index = torch.topk(confidence[j], k=transfer_length)
+                    transfer_index[j, select_index] = True
+                xt[transfer_index] = x0[transfer_index]
+                conf_cache[transfer_index] = confidence[transfer_index]
+            if torch.sum(xt == self.tokenizer.eos_token_id) > 0:
+                return xt
+
         return xt
 
+    @torch.no_grad()
     def generate_until(self, requests: list[Instance]):
         def _tokenize(e):
             return {
@@ -457,14 +469,10 @@ class LLaDAEvalHarness(LM):
         out, out_for_json = [], []
         for elem in tqdm(ds, desc="Generating..."):
             prompt = elem["question"].unsqueeze(0).to(self.device)
-            stop_tokens = elem["until"]
+            stop_tokens = elem["until"] + ["<|eot_id|>", self.tokenizer.eos_token]
  
-            if self.sampler == 'llada_random':
-                generated_answer = self.llada_random_sample(prompt)
-            elif self.sampler == 'llada_conf':
+            if self.sampler == 'llada_conf':
                 generated_answer = self.llada_conf_sample(prompt)
-            elif self.sampler == 'llada_random_remdm':
-                generated_answer = self.llada_randomremdm_sample(prompt)
             elif self.sampler == 'llada_conf_remdm':
                 generated_answer = self.llada_confremdm_sample(prompt)
             elif self.sampler == 'llada_random_remdm_loop':
@@ -473,6 +481,7 @@ class LLaDAEvalHarness(LM):
                 generated_answer = self.llada_confremdmloop_sample(prompt)
             
             generated_answer = self.tokenizer.decode(generated_answer[0][prompt.shape[1]:], skip_special_tokens=False)
+            # print(elem['question_text'] + generated_answer)
             for stop_seq in stop_tokens:
                 if stop_seq in generated_answer:
                     generated_answer = generated_answer.split(stop_seq)[0]
@@ -480,16 +489,17 @@ class LLaDAEvalHarness(LM):
             # remove special tokens
             generated_answer_ids = self.tokenizer(generated_answer)["input_ids"]
             generated_answer = self.tokenizer.decode(generated_answer_ids, skip_special_tokens=True)
+            # print(elem['question_text'] + generated_answer)
             out.append(generated_answer)
             out_for_json.append({
                 "prefix": elem["question_text"],
-                "result": out,
+                "result": generated_answer,
             })
 
             if self.accelerator is not None:
                 self.accelerator.wait_for_everyone()
 
-        with open(self.generated_samples_path + str(self._rank) + ".json", "w") as f:
+        with open(os.path.join(self.generated_samples_path, str(self._rank) + ".json"), "w") as f:
             json.dump(out_for_json, f, indent=2)
 
         return out
